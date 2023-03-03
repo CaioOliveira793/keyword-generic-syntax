@@ -1,5 +1,6 @@
 - Name: `keyword-generic-effect-clause`
 - Proposed by: [@CaioOliveira793](https://github.com/CaioOliveira793)
+- Original proposal: None
 
 # Design
 
