@@ -1,11 +1,9 @@
 - Name: `keyword-generic-effect-clause`
-- Proposed by: [Caio](@CaioOliveira793)
-- Original proposal (optional): N/A
+- Proposed by: [@CaioOliveira793](https://github.com/CaioOliveira793)
 
 # Design
 
-<!-- Please fill out the snippets labeled with "fill me in". If there are any
-other examples you want to show, please feel free to append more.-->
+This syntax focus on being simple and recognizable rust code, with the possibility to incrementally extend the capabilities that keyewords generic may provide.
 
 ## base (reference)
 
@@ -38,7 +36,7 @@ where
 {
     type Item;
 
-    // opt-in for a async effect
+    // opt-in for a always async effect
     fn next(&mut self) -> Option<Self::Item>
     where
         effect: async;
@@ -47,17 +45,13 @@ where
     fn size_hint(&self) -> (usize, Option<usize>);
 }
 
-// the `effect` generic indicates that this function is generic
-// over keywords
 pub fn find<I, T, P, effect>(iter: &mut I, predicate: P) -> Option<T>
 where
     effect: async,
-    // iterator effect **must** be async
-    I: Iterator<effect = async>
-    // a short version is also possible
-    // I: Iterator<effect = async, Item = T> + Sized,
     I: Iterator<Item = T> + Sized,
-    P: FnMut(&T) -> bool;
+    <I as Iterator>::effect: async,
+    P: FnMut(&T) -> bool,
+    <P as FnMut>::effect: async;
 ```
 
 ## maybe async
@@ -81,10 +75,10 @@ where
 pub fn find<I, T, P, effect>(iter: &mut I, predicate: P) -> Option<T>
 where
     effect: ?async,
-    // iterator effect is be **maybe** async
-    I: Iterator<effect = ?async>
     I: Iterator<Item = T> + Sized,
-    P: FnMut(&T) -> bool;
+    <I as Iterator>::effect: ?async,
+    P: FnMut(&T) -> bool,
+    <P as FnMut>::effect: ?async;
 ```
 
 ## generic over all modifier keywords
@@ -95,7 +89,7 @@ where
 ```rust
 pub trait Iterator<effect>
 where
-    // in order to be generic over all keywords the effect clause must specify all the keywords available
+    // LIMITATION: in order to be generic over all keywords the effect clause must specify all keywords available
     effect: ?async + ?const
 {
     type Item;
@@ -104,74 +98,109 @@ where
     where
         effect: ?async + ?const;
 
-    // functions without effect anotatios follows the same rules as if
-    // the trait wasn't generic over a keyword
     fn size_hint(&self) -> (usize, Option<usize>);
-
-    // ... or possibilly, they could restrict the keywords allowed
-    fn size_hint(&self) -> (usize, Option<usize>)
-    where
-        effect: !async + ?const;
 }
 
 pub fn find<I, T, P, effect>(iter: &mut I, predicate: P) -> Option<T>
 where
     effect: ?async + ?const,
-    I: Iterator<effect = ?async + ?const, Item = T> + Sized,
-    P: FnMut(&T) -> bool;
+    I: Iterator<Item = T> + Sized,
+    <I as Iterator>::effect: ?async + ?const,
+    P: FnMut(&T) -> bool,
+    <P as FnMut>::effect: ?async + ?const;
 ```
 
 # Notes
 
-## Compatiablity
+## Trait effect bounds
 
-compatible with [associated type bounds](https://github.com/rust-lang/rust/issues/52662):
+The syntax for specifying the effect of a trait implemented by some generic argument `<I as Iterator>::effect: const` could be different
 
 ```rust
-pub fn find<I, T, P, effect>(iter: &mut I, predicate: P) -> Option<T>
-where
-    effect: ?async + ?const,
-    // the choice over ":" or "=" is open
-    I: Iterator<effect = ?async + ?const>,
-    // or
-    <I as Iterator>::effect: ?async + ?const,
-    // or
-    I: Iterator<effect: ?async + ?const>,
-    I: Iterator<Item = T> + Sized,
-    P: FnMut(&T) -> bool;
+I: Iterator<effect = ?async + ?const>
+
+// or
+
+// Associated type bounds [RFC 2289](https://github.com/rust-lang/rfcs/blob/master/text/2289-associated-type-bounds.md)
+I: Iterator<effect: ?async + ?const>
 ```
 
-is also compatible with [return type notation](https://smallcultfollowing.com/babysteps/blog/2023/02/13/return-type-notation-send-bounds-part-2/)
+The current way mimics how associated types are bound
 
 ```rust
-pub trait HealthCheck<effect>
+fn print_iter<I, effect>(iter: I)
 where
-    effect: async
+    effect: ?async,
+    I: Iterator,
+    <I as Iterator>::Item: Display,
+    <I as Iterator>::effect: ?async;
+```
+
+## Explicit generic over all modifier keywords
+
+The syntax does not give shortans for specifying all modifiers at once. Instead, the function, trait or type should **explicit bound** over all keywords it could be generic.
+
+Although being inconvenient to list it manually, this has some advantages over the *generic over all keywords available* syntax.
+
+### Explicit
+
+Readers does not have to remind which keywords are available that may need to be implemented in some specific way.
+
+### Backwards compatible to introduce new keywords in the language
+
+Allowing the *generic over all* means that in case a new keyword lands, all *complete generic* functions and traits may be affected by the keyword, requiring at least some considerations on the side effects.
+
+## Limitations
+
+These are some limitations (hopefully, not yet supported features) noticed in the syntax.
+
+### Effect sets
+
+Function generic over sets of effects, limiting it to be called by **only one** group of effects.
+
+```rust
+fn compute<effect<KernelSpace | UserSpace | PreComputed>>() -> Response
+where
+    effect<KernelSpace>: !alloc + !panic + !async,
+    effect<UserSpace>: alloc + ?async,
+    effect<PreComputed>: const
 {
-    fn check(&mut self, server: Server)
-    where
-        effect: async;
+    if effect<KernelSpace> {
+        // ensures that in "KernelSpace" will not alloc, panic or run futures
+    }
+    if effect<UserSpace> {
+        // allow allocations and futures
+    }
+    if effect<PreComputed> {
+        // only compile-time evaluation
+    }
 }
 
-fn start_health_check<H, effect>(health_check: H, server: Server)
+fn caller1()
 where
-    effect: async,
-    H: HealthCheck<effect: async, check(): Send> + Send + 'static,
+    effect: ?alloc + !panic + !async
+{
+    compute<effect<KernelSpace>>() // allowed
+}
+
+fn caller2()
+where
+    effect: alloc + async
+{
+    compute<effect<UserSpace>>() // allowed
+}
+
+fn caller3()
+where
+    effect: !alloc
+{
+    compute<effect<UserSpace>>() // compiler error
+}
+
+fn caller4()
+where
+    effect: const
+{
+    compute<effect<PreComputed>>() // allowed
+}
 ```
-
-## explicit all modifiers keywords
-
-The syntax does not give shortans for specifing all modifiers at once.
-
-Positive
-
-- explicit
-- backwards compatible to introduce new keywords
-- extendable
-
-Negative
-
-- cumbersome to declare all keywords
-
-<!-- Add additional notes, context, and thoughts you want to share about your design
-here -->
